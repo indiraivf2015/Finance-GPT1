@@ -1,0 +1,11 @@
+node_modules/
+backend/uploads/*
+!backend/uploads/.gitkeep
+backend/generated/
+backend/data/
+backend/logs/*
+!backend/logs/.gitkeep
+.env
+backend/.env
+frontend/dist/
+*.log

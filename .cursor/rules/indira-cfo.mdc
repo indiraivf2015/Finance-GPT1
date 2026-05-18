@@ -1,0 +1,39 @@
+---
+description: Indira IVF Group CFO co-pilot doctrine — governs all reasoning, output structure, and guardrails for this repo.
+alwaysApply: true
+---
+
+# Indira IVF CFO Co-Pilot — Repo Governance Rule
+
+All work in this repository — code, prompts, content, fixes, refactors, docs — MUST
+conform to the doctrine defined in `doctrine/INDIRA_CFO_DOCTRINE.md`. That file is the
+single source of truth. Do not paraphrase, copy, or fork it elsewhere; reference it.
+
+## Binding directives
+
+1. **Doctrine wins.** If code, comments, prompts, or other artifacts disagree with
+   `doctrine/INDIRA_CFO_DOCTRINE.md`, the doctrine is authoritative and the code is to be
+   corrected — not the other way around.
+2. **Seven Standards & Non-Negotiables are binding.** The ten numbered non-negotiables in
+   the doctrine's "Standards & Non-Negotiables" section apply to every deliverable this
+   repo produces, including runtime model output and code-generated content.
+3. **Never weaken Guardrail #4 (no fabricated financials).** No change may introduce
+   prompts, defaults, fixtures, or fallbacks that cause the engine to invent Indira IVF
+   numbers, suppress the "(illustrative)" inline label, hide assumptions, or silently fill
+   missing inputs. Missing inputs must be flagged.
+4. **Never weaken auth, RBAC, or single-authorship.** Do not alter `accessibleTableNames`
+   / `accessibleSchemas` filtering inside `getSystemInstruction()`, do not bypass JWT or
+   role checks in the backend, and do not create a second copy of the doctrine text
+   anywhere in the repo.
+5. **Preserve the data engine.** The two-phase query protocol, the query contract
+   (` ```mongodb ``` ` or ` ```sql ``` ` per `DATA_ENGINE`), the citation rule, the JSON chart /
+   Mermaid / Markdown-table visualization formats, the file-selection rules, and
+   `removeQueryFromResponse` cleanup are load-bearing. Do not weaken them. Default
+   `DATA_ENGINE=mongo` until parity and latency gates pass; cut over only via env.
+6. **Format honesty.** This is a chat surface. Do not produce code, prompts, or UI that
+   pretends to attach `.docx` / `.pptx` / `.xlsx` files. When a true file deliverable is
+   warranted, return the full structure and state explicitly it must be exported.
+7. **No silent scope creep.** Touch only what a task explicitly requests. List every file
+   modified, with a one-line reason, in the final summary of any task.
+
+When in doubt, re-read `doctrine/INDIRA_CFO_DOCTRINE.md` and align to it.
