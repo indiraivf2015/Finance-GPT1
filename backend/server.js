@@ -24,6 +24,16 @@ import {
 import { validateSql } from './lib/validate-sql.js';
 import { ingestCsvIntoDuckDB, executeDuckDBQuery, describeDuckDBTable, dropDuckDBTable } from './lib/duckdb-engine.js';
 import { validateProductionEnv, getAllowedOrigins, isProduction } from './lib/env.js';
+import {
+  getGeminiClient,
+  getGeminiModel,
+  completeGeminiChat,
+  streamGeminiChat,
+} from './lib/gemini-chat.js';
+import {
+  validatePipelineWithSchema,
+  buildSchemaHintForCollection,
+} from './lib/pipeline-validator.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -101,6 +111,7 @@ if (process.env.NODE_ENV !== 'production') {
   console.log(`   GEMINI_API_KEY: ${process.env.GEMINI_API_KEY ? '✅ Loaded' : '❌ Not found'}`);
   console.log(`   ANTHROPIC_API_KEY: ${process.env.ANTHROPIC_API_KEY ? '✅ Loaded' : '❌ Not found'}`);
   console.log(`   ANTHROPIC_MODEL: ${process.env.ANTHROPIC_MODEL || ANTHROPIC_MODEL_DEFAULT} (default if unset)`);
+  console.log(`   GEMINI_MODEL: ${getGeminiModel()}`);
   if (!MONGODB_URI) {
     console.log('\n⚠️  MONGODB_URI not found in .env file!');
     console.log('   Make sure your .env file contains:');
@@ -700,26 +711,9 @@ async function parseAndStoreXLSXInMongo(originalFileName, filePath) {
   return sheetsResult;
 }
 
+/** @deprecated — use validatePipelineWithSchema from pipeline-validator.js */
 function validatePipeline(pipeline) {
-  if (!Array.isArray(pipeline)) {
-    throw new Error('Pipeline must be an array');
-  }
-  
-  const dangerousStages = ['$out', '$merge', '$currentOp', '$listSessions', '$planCacheStats'];
-  
-  for (const stage of pipeline) {
-    if (typeof stage !== 'object' || stage === null) {
-      throw new Error('Each pipeline stage must be an object');
-    }
-    const stageKeys = Object.keys(stage);
-    for (const key of stageKeys) {
-      if (dangerousStages.includes(key)) {
-        throw new Error(`Dangerous pipeline stage not allowed: ${key}`);
-      }
-    }
-  }
-  
-  return pipeline;
+  return validatePipelineWithSchema(pipeline, {});
 }
 
 function schemaColumnsForEngine(fileDoc) {
@@ -889,6 +883,7 @@ app.get('/health', (req, res) => {
     anthropicModel: process.env.ANTHROPIC_MODEL || ANTHROPIC_MODEL_DEFAULT,
     anthropicModelQuery: resolveAnthropicModel(1),
     anthropicModelAnswer: resolveAnthropicModel(2),
+    geminiModel: getGeminiModel(),
     dataEngine: DATA_ENGINE,
     apiKeyLength: process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.length : 0,
     dbConnected: db !== null
@@ -901,6 +896,12 @@ app.get('/api/config', authenticateToken, (req, res) => {
     queryContract: DATA_ENGINE === 'sql' ? 'sql' : 'mongodb',
     anthropicModelQuery: resolveAnthropicModel(1),
     anthropicModelAnswer: resolveAnthropicModel(2),
+    geminiModel: getGeminiModel(),
+    providers: {
+      claude: !!process.env.ANTHROPIC_API_KEY?.trim(),
+      gemini: !!getGeminiClient(),
+    },
+    defaultProvider: 'claude',
   });
 });
 
@@ -1123,22 +1124,36 @@ app.post('/api/usage', authenticateToken, async (req, res) => {
   }
 });
 
-// --- Anthropic Claude (text/chat; API key stays on server) ---
+// --- LLM chat (Claude or Gemini; API keys stay on server) ---
+function resolveChatProvider(body) {
+  return body?.provider === 'gemini' ? 'gemini' : 'claude';
+}
+
 app.post('/api/chat', authenticateToken, async (req, res) => {
+  const provider = resolveChatProvider(req.body);
+  const system = typeof req.body?.system === 'string' ? req.body.system : '';
+  const messages = normalizeAnthropicMessages(req.body?.messages);
+  if (!messages) {
+    return res.status(400).json({
+      error: 'Invalid messages: provide a non-empty array of { role, content } alternating user/assistant, starting with user'
+    });
+  }
+
   try {
+    if (provider === 'gemini') {
+      if (!getGeminiClient()) {
+        return res.status(503).json({ error: 'Gemini API not configured (set GEMINI_API_KEY)' });
+      }
+      const { text, usage } = await completeGeminiChat(system, messages);
+      return res.json({ text, usage, provider: 'gemini', model: getGeminiModel() });
+    }
+
     const client = getAnthropicClient();
     if (!client) {
       return res.status(503).json({ error: 'Anthropic API not configured (set ANTHROPIC_API_KEY)' });
     }
     const phase = Number(req.body?.phase) || 2;
     const model = resolveAnthropicModel(phase);
-    const system = typeof req.body?.system === 'string' ? req.body.system : '';
-    const messages = normalizeAnthropicMessages(req.body?.messages);
-    if (!messages) {
-      return res.status(400).json({
-        error: 'Invalid messages: provide a non-empty array of { role, content } alternating user/assistant, starting with user'
-      });
-    }
     const maxTokens = Math.min(Math.max(Number(req.body?.max_tokens) || 8192, 256), 16384);
     const msg = await client.messages.create({
       model,
@@ -1158,21 +1173,18 @@ app.post('/api/chat', authenticateToken, async (req, res) => {
         promptTokens: inT,
         completionTokens: outT,
         totalTokens: inT + outT
-      }
+      },
+      provider: 'claude',
+      model
     });
   } catch (error) {
-    console.error('Anthropic /api/chat error:', error);
-    res.status(500).json({ error: error.message || 'Anthropic request failed' });
+    console.error(`${provider} /api/chat error:`, error);
+    res.status(500).json({ error: error.message || `${provider} request failed` });
   }
 });
 
 app.post('/api/chat/stream', authenticateToken, async (req, res) => {
-  const client = getAnthropicClient();
-  if (!client) {
-    return res.status(503).json({ error: 'Anthropic API not configured (set ANTHROPIC_API_KEY)' });
-  }
-  const phase = Number(req.body?.phase) || 2;
-  const model = resolveAnthropicModel(phase);
+  const provider = resolveChatProvider(req.body);
   const system = typeof req.body?.system === 'string' ? req.body.system : '';
   const messages = normalizeAnthropicMessages(req.body?.messages);
   if (!messages) {
@@ -1180,7 +1192,13 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       error: 'Invalid messages: provide a non-empty array of { role, content } alternating user/assistant, starting with user'
     });
   }
-  const maxTokens = Math.min(Math.max(Number(req.body?.max_tokens) || 16384, 256), 16384);
+
+  if (provider === 'gemini' && !getGeminiClient()) {
+    return res.status(503).json({ error: 'Gemini API not configured (set GEMINI_API_KEY)' });
+  }
+  if (provider === 'claude' && !getAnthropicClient()) {
+    return res.status(503).json({ error: 'Anthropic API not configured (set ANTHROPIC_API_KEY)' });
+  }
 
   res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache');
@@ -1188,7 +1206,21 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
+  const writeLine = (evt) => {
+    res.write(`${JSON.stringify(evt)}\n`);
+  };
+
   try {
+    if (provider === 'gemini') {
+      await streamGeminiChat(system, messages, writeLine);
+      res.end();
+      return;
+    }
+
+    const client = getAnthropicClient();
+    const phase = Number(req.body?.phase) || 2;
+    const model = resolveAnthropicModel(phase);
+    const maxTokens = Math.min(Math.max(Number(req.body?.max_tokens) || 16384, 256), 16384);
     const stream = client.messages.stream({
       model,
       max_tokens: maxTokens,
@@ -1196,28 +1228,22 @@ app.post('/api/chat/stream', authenticateToken, async (req, res) => {
       messages
     });
     stream.on('text', (textDelta) => {
-      if (textDelta) {
-        res.write(`${JSON.stringify({ type: 'text', text: textDelta })}\n`);
-      }
+      if (textDelta) writeLine({ type: 'text', text: textDelta });
     });
     const finalMsg = await stream.finalMessage();
     const inT = finalMsg.usage?.input_tokens ?? 0;
     const outT = finalMsg.usage?.output_tokens ?? 0;
-    res.write(
-      `${JSON.stringify({
-        type: 'usage',
-        promptTokens: inT,
-        completionTokens: outT,
-        totalTokens: inT + outT
-      })}\n`
-    );
+    writeLine({
+      type: 'usage',
+      promptTokens: inT,
+      completionTokens: outT,
+      totalTokens: inT + outT
+    });
     res.end();
   } catch (error) {
-    console.error('Anthropic /api/chat/stream error:', error);
+    console.error(`${provider} /api/chat/stream error:`, error);
     try {
-      res.write(
-        `${JSON.stringify({ type: 'error', message: error.message || 'Anthropic stream failed' })}\n`
-      );
+      writeLine({ type: 'error', message: error.message || `${provider} stream failed` });
     } catch (_) {
       /* ignore */
     }
@@ -2288,12 +2314,11 @@ app.post('/api/data/query', authenticateToken, async (req, res) => {
       }
     }
     
-    validatePipeline(pipeline);
-    
-    // Determine collection name
+    // Determine collection name and file metadata (for schema-aware validation)
     let collectionName = reqCollection;
+    let fileDoc = null;
     if (fileName) {
-      const fileDoc = await db.collection('csvFiles').findOne({ fileName, isActive: { $ne: false } });
+      fileDoc = await db.collection('csvFiles').findOne({ fileName, isActive: { $ne: false } });
       if (!fileDoc) {
         const wasDeleted = await db.collection('csvFiles').findOne({ fileName, isActive: false });
         if (wasDeleted) {
@@ -2307,8 +2332,25 @@ app.post('/api/data/query', authenticateToken, async (req, res) => {
       if (!collectionName) {
         collectionName = fileDoc.dataCollection || getCollectionName(fileName);
       }
-    } else if (!collectionName) {
+    } else if (collectionName) {
+      fileDoc = await db.collection('csvFiles').findOne({
+        $or: [{ dataCollection: collectionName }, { fileName: collectionName.replace(/^data_/, '') }],
+        isActive: { $ne: false },
+      });
+    } else {
       return res.status(400).json({ error: 'fileName or collectionName is required' });
+    }
+
+    const { columnTypes } = fileDoc ? schemaColumnsForEngine(fileDoc) : { columnTypes: {} };
+    try {
+      validatePipelineWithSchema(pipeline, columnTypes);
+    } catch (validationErr) {
+      const schemaHint = fileDoc ? buildSchemaHintForCollection(fileDoc) : '';
+      return res.status(400).json({
+        error: validationErr.message,
+        hint: schemaHint || 'Use $match and $group only; copy exact column names from /api/data/schemas',
+        code: 'PIPELINE_VALIDATION',
+      });
     }
     
     console.log(`📊 Executing aggregation on ${collectionName}: ${JSON.stringify(pipeline).substring(0, 300)}`);

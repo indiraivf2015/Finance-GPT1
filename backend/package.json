@@ -17,6 +17,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
     "@duckdb/node-api": "^1.5.2-r.1",
+    "@google/genai": "^1.52.0",
     "bcryptjs": "^2.4.3",
     "csv-parse": "^6.1.0",
     "docx": "^9.6.1",

@@ -9,6 +9,16 @@ import {
 } from 'recharts';
 import { INDIRA_CFO_DOCTRINE } from './doctrine';
 import { getBackendBaseUrl, DEV_BACKEND_PORT } from './runtime-api';
+import {
+  pickFilesForQuery,
+  formatCollectionSchemaBlock,
+  buildRevenueMongoExample,
+  buildMongoQueryRules,
+  buildMongoRepairPrompt,
+  formatAccessibleSourcesList,
+  detectQueryTopics,
+  type CollectionSchema,
+} from './lib/mongo-query-hints';
 
 // --- Types ---
 declare global {
@@ -2931,11 +2941,14 @@ function buildAnthropicSidecarMessages(
   return out;
 }
 
-async function streamAnthropicChat(
+type LlmProvider = 'claude' | 'gemini';
+
+async function streamLlmChat(
   system: string,
   messages: { role: 'user' | 'assistant'; content: string }[],
   onTextDelta: (fullSoFar: string) => void,
-  phase: 1 | 2 = 2
+  phase: 1 | 2 = 2,
+  provider: LlmProvider = 'claude'
 ): Promise<{ text: string; usage: { promptTokens: number; completionTokens: number; totalTokens: number } }> {
   const token = localStorage.getItem('auth_token');
   if (!token) throw new Error('Not authenticated');
@@ -2945,7 +2958,7 @@ async function streamAnthropicChat(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ system, messages, phase }),
+    body: JSON.stringify({ system, messages, phase, provider }),
   });
   if (!res.ok) {
     let errMsg = `HTTP ${res.status}`;
@@ -3038,10 +3051,11 @@ async function streamAnthropicChat(
   return { text: streamedText, usage };
 }
 
-async function completeAnthropicChat(
+async function completeLlmChat(
   system: string,
   messages: { role: 'user' | 'assistant'; content: string }[],
-  phase: 1 | 2 = 2
+  phase: 1 | 2 = 2,
+  provider: LlmProvider = 'claude'
 ): Promise<{ text: string; usage: { promptTokens: number; completionTokens: number; totalTokens: number } }> {
   const token = localStorage.getItem('auth_token');
   if (!token) throw new Error('Not authenticated');
@@ -3051,7 +3065,7 @@ async function completeAnthropicChat(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ system, messages, phase }),
+    body: JSON.stringify({ system, messages, phase, provider }),
   });
   const data = (await res.json().catch(() => ({}))) as {
     error?: string;
@@ -3105,14 +3119,27 @@ const App = () => {
   // Chat File Upload State
   const [chatAttachments, setChatAttachments] = useState<Attachment[]>([]);
   const [sqlTables, setSqlTables] = useState<string[]>([]);
-  const [tableSchemas, setTableSchemas] = useState<Record<string, { columns: string[], rowCount: number, fileName: string, parseQuality?: Array<{ column: string; inferred: 'numeric' | 'text' | 'mixed'; coercedPct: number }> }>>({});
+  const [tableSchemas, setTableSchemas] = useState<Record<string, CollectionSchema>>({});
   const chatFileInputRef = useRef<HTMLInputElement>(null);
   const [dataLoaded, setDataLoaded] = useState(false);
   const [userAccessibleFiles, setUserAccessibleFiles] = useState<string[]>([]);
   const [filesLoaded, setFilesLoaded] = useState(false);
   const [dataEngine, setDataEngine] = useState<'mongo' | 'sql'>('mongo');
   const [queryContract, setQueryContract] = useState<'mongodb' | 'sql'>('mongodb');
+  const [llmProvider, setLlmProvider] = useState<LlmProvider>(() => {
+    const saved = localStorage.getItem('llm_provider');
+    return saved === 'gemini' ? 'gemini' : 'claude';
+  });
+  const [llmProviders, setLlmProviders] = useState<{ claude: boolean; gemini: boolean }>({
+    claude: true,
+    gemini: false,
+  });
+  const [geminiModelLabel, setGeminiModelLabel] = useState('gemini-3-flash-preview');
   const [activeFocusCollection, setActiveFocusCollection] = useState<string | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem('llm_provider', llmProvider);
+  }, [llmProvider]);
   const isLoadingRef = useRef(false);
   const reloadInProgressRef = useRef(false);
 
@@ -3136,9 +3163,27 @@ const App = () => {
               headers: { Authorization: `Bearer ${token}` },
             });
             if (cfgRes.ok) {
-              const cfg = await cfgRes.json();
+              const cfg = await cfgRes.json() as {
+                dataEngine?: string;
+                queryContract?: string;
+                geminiModel?: string;
+                providers?: { claude?: boolean; gemini?: boolean };
+              };
               if (cfg.dataEngine === 'sql') setDataEngine('sql');
               if (cfg.queryContract === 'sql') setQueryContract('sql');
+              if (cfg.geminiModel) setGeminiModelLabel(cfg.geminiModel);
+              if (cfg.providers) {
+                setLlmProviders({
+                  claude: cfg.providers.claude !== false,
+                  gemini: !!cfg.providers.gemini,
+                });
+                const saved = localStorage.getItem('llm_provider') === 'gemini' ? 'gemini' : 'claude';
+                if (saved === 'gemini' && !cfg.providers.gemini && cfg.providers.claude) {
+                  setLlmProvider('claude');
+                } else if (saved === 'claude' && !cfg.providers.claude && cfg.providers.gemini) {
+                  setLlmProvider('gemini');
+                }
+              }
             }
           } catch {
             /* keep defaults */
@@ -3689,7 +3734,7 @@ const App = () => {
     };
   };
 
-  const getSystemInstruction = (focusCollectionName?: string | null) => {
+  const getSystemInstruction = (focusCollectionName?: string | null, provider: LlmProvider = llmProvider) => {
     const contextData = Object.values(layerData).join('\n');
     const focus = focusCollectionName || activeFocusCollection;
     
@@ -3706,14 +3751,14 @@ const App = () => {
     }
     
     let accessibleSchemas = Object.fromEntries(
-      Object.entries(tableSchemas).filter(([tableName, schema]) => {
+      Object.entries(tableSchemas).filter(([tableName, schema]: [string, CollectionSchema]) => {
         if (userAccessibleFiles.length === 0) {
           return focus ? tableName === focus : true;
         }
         if (!userAccessibleFiles.includes(schema.fileName)) return false;
         return focus ? tableName === focus : true;
       })
-    ) as Record<string, { columns: string[]; rowCount: number; fileName: string; parseQuality?: Array<{ column: string; inferred: 'numeric' | 'text' | 'mixed'; coercedPct: number }> }>;
+    ) as Record<string, CollectionSchema>;
 
     // Build a one-line warning per collection whose sum-able-looking columns
     // failed to parse cleanly as numeric. The model uses this to proactively
@@ -3784,7 +3829,9 @@ You must synthesize answers from **ALL available sources** (Acquisition, Demogra
   }).join(', ') : 'None yet'}.
    - ${queryContract === 'sql'
   ? '**STRICT SQL RULE:** Single SELECT or WITH…SELECT only. Use GROUP BY UPPER(TRIM("dimension")) for text dimensions. Use TRY_CAST(col AS DOUBLE) when parseQuality flags mixed/text metrics.'
-  : '**STRICT PIPELINE RULE:** Output valid JSON aggregation pipeline arrays. Use $match, $group, $sort, $project, $limit, $unwind, $count, $addFields stages only.'}
+  : '**STRICT PIPELINE RULE:** Output valid JSON aggregation pipeline arrays. Use $match, $group, $sort, $project, $limit, $count, $addFields only. NEVER use $split or parse col_* as CSV.'}
+
+${queryContract !== 'sql' ? buildMongoQueryRules(provider) : ''}
 
 **VISUALIZATION & BI DASHBOARDING:**
 When users ask for "analysis", "audit", or "plan", **PRIORITIZE** visual thinking.
@@ -3894,14 +3941,7 @@ E. THE COMPETITIVE LAYER (Market Intelligence)
 - Fatal Error Rate: (Sum of Fatal Counts / Total Calls Audited)
 
 **AVAILABLE DATA SOURCES (MongoDB Collections):**
-${accessibleTableNames.length > 0 ? accessibleTableNames.map((collName: string) => {
-  const schema = accessibleSchemas[collName];
-  if (schema && schema.rowCount > 0) {
-    const businessName = schema.fileName.replace('.csv', '').replace(/_/g, ' ');
-    return `- **${businessName}** → Collection: \`${collName}\` | ${schema.columns.length} columns: ${schema.columns.slice(0, 8).join(', ')}${schema.columns.length > 8 ? '...' : ''} | ${schema.rowCount.toLocaleString()} records`;
-  }
-  return null;
-}).filter(Boolean).join('\n') : 'No data sources currently available. Please wait for data to load.'}
+${accessibleTableNames.length > 0 ? formatAccessibleSourcesList(accessibleTableNames, accessibleSchemas) : 'No data sources currently available. Please wait for data to load.'}
 
 **CRITICAL FILE SELECTION RULES (MANDATORY):**
 - **REVENUE queries** → Use "Revenue.csv" file ONLY (NOT CRM leads.csv or other files)
@@ -3935,24 +3975,14 @@ When a user asks for totals/sums on a flagged column, do NOT silently aggregate.
 - When generating charts, use the ACTUAL data values from query results
 
 **HOW TO GENERATE MONGODB QUERIES:**
-When you need to query data, output a \`\`\`mongodb code block containing a JSON object with "collection" and "pipeline" keys:
-\`\`\`mongodb
-{
-  "collection": "data_revenue",
-  "pipeline": [
-    { "$match": { "District": "Thane" } },
-    { "$group": { "_id": null, "total": { "$sum": "$Total Revenue" } } }
-  ]
-}
-\`\`\`
-- The "collection" field must be one of the collection names listed above
-- The "pipeline" field must be a valid MongoDB aggregation pipeline array
-- Use $match for filtering, $group for aggregation (SUM, AVG, COUNT), $sort for ordering, $limit for top-N, $project for field selection
-- Field names in $group must be prefixed with "$" (e.g., "$Total Revenue")
-- For COUNT: use { "$count": "total" } or { "$group": { "_id": null, "count": { "$sum": 1 } } }
-- For SUM: use { "$group": { "_id": null, "total": { "$sum": "$fieldName" } } }
-- For GROUP BY: use { "$group": { "_id": "$groupField", "total": { "$sum": "$valueField" } } }
-- For TOP-N: add { "$sort": { "total": -1 } } then { "$limit": 10 }
+When you need to query data, output a \`\`\`mongodb code block containing a JSON object with "collection" and "pipeline" keys.
+Use EXACT collection and column names from AVAILABLE DATA SOURCES above (including types).
+- For Gujarat / state revenue: use \`StateName\` if listed (not \`State\` unless listed).
+- For revenue totals: $sum on numeric columns such as \`Total_Revenue\`, \`IVF_Revenue\`, etc.
+- NEVER use $split — data is already columnar in MongoDB.
+- The "collection" field must match a collection name listed above exactly.
+- For COUNT: { "$group": { "_id": null, "count": { "$sum": 1 } } }
+- For SUM: { "$group": { "_id": null, "total": { "$sum": "$ExactColumnName" } } }
 
 **Instructions:**
 - If user wants a "Strategic Audit", "Top 10 Initiatives", or "Simulation", perform a deep **Design Thinking** exercise.
@@ -4035,8 +4065,9 @@ ${layer3ExecutionSubstrate}`;
     if (!res.ok) {
       let errorMessage = 'MongoDB query failed';
       try {
-        const errorData = await res.json();
+        const errorData = await res.json() as { error?: string; hint?: string };
         errorMessage = errorData.error || errorMessage;
+        if (errorData.hint) errorMessage += ` ${errorData.hint}`;
       } catch (e) {
         errorMessage = `Server returned ${res.status}: ${res.statusText}`;
       }
@@ -4178,91 +4209,9 @@ ${layer3ExecutionSubstrate}`;
     }
   };
 
-  // File matching function: Maps user query keywords to actual CSV file names
+  // File matching: schema-aware routing (revenue-only, cluster expansion, etc.)
   const matchFilesToQuery = (query: string, availableFiles: Attachment[]): Attachment[] => {
-    const queryLower = query.toLowerCase();
-    const matchedFiles: Attachment[] = [];
-    const matchedFileNames = new Set<string>();
-    
-    // CRITICAL: Revenue queries MUST use Revenue.csv ONLY
-    const isRevenueQuery = /revenue|revenues|financial|income|earnings|money|rupees|rs\.|₹|generated|contribution|contributing/i.test(queryLower);
-    if (isRevenueQuery) {
-      const revenueFile = availableFiles.find(f => f.name.toLowerCase().includes('revenue') && !f.name.toLowerCase().includes('lead'));
-      if (revenueFile) {
-        // For revenue queries, ONLY return Revenue.csv - exclude all other files
-        return [revenueFile];
-      }
-    }
-    
-    // Explicit keyword-to-file mappings
-    const fileMappings: { keywords: string[]; filePatterns: string[] }[] = [
-      {
-        keywords: ['revenue', 'revenues', 'financial', 'income', 'earnings', 'money', 'rupees', 'rs.', '₹'],
-        filePatterns: ['revenue', 'Revenue']
-      },
-      {
-        keywords: ['call', 'calls', 'call center', 'call centre', 'audit', 'transcript', 'conversation', 'customer service'],
-        filePatterns: ['call', 'Call', 'audit', 'Audit', 'transcript', 'Transcript']
-      },
-      {
-        keywords: ['lead', 'leads', 'crm', 'inquiry', 'inquiries', 'enquiry', 'enquiries'],
-        filePatterns: ['lead', 'Lead', 'crm', 'CRM']
-      },
-      {
-        keywords: ['conversion', 'conversions', 'treatment', 'treatments', 'patient conversion'],
-        filePatterns: ['conversion', 'Conversion', 'treatment', 'Treatment']
-      },
-      {
-        keywords: ['icsi', 'ivf', 'fertility', 'treatment'],
-        filePatterns: ['icsi', 'ICSI', 'ivf', 'IVF']
-      },
-      {
-        keywords: ['market share', 'market', 'competition', 'competitor', 'competitive'],
-        filePatterns: ['market', 'Market', 'competition', 'Competition', 'Competetion']
-      },
-      {
-        keywords: ['region', 'regional', 'city', 'cities', 'geography', 'geographic', 'location', 'locations'],
-        filePatterns: ['region', 'Region', 'city', 'City']
-      },
-      {
-        keywords: ['source', 'sources', 'channel', 'channels', 'marketing', 'medium', 'media'],
-        filePatterns: ['source', 'Source', 'channel', 'Channel', 'medium', 'Medium']
-      },
-      {
-        keywords: ['landing page', 'landing', 'page', 'pages'],
-        filePatterns: ['landing', 'Landing']
-      },
-      {
-        keywords: ['revenue', 'revenues'],
-        filePatterns: ['revenue', 'Revenue']
-      }
-    ];
-    
-    // Find matching files based on keywords
-    for (const mapping of fileMappings) {
-      const hasKeyword = mapping.keywords.some(keyword => queryLower.includes(keyword));
-      if (hasKeyword) {
-        for (const file of availableFiles) {
-          if (!matchedFileNames.has(file.name)) {
-            const fileNameLower = file.name.toLowerCase();
-            const matchesPattern = mapping.filePatterns.some(pattern => 
-              fileNameLower.includes(pattern.toLowerCase())
-            );
-            if (matchesPattern) {
-              matchedFiles.push(file);
-              matchedFileNames.add(file.name);
-            }
-          }
-        }
-      }
-    }
-    
-    // If no specific matches, return all available files (let Gemini decide)
-    if (matchedFiles.length === 0) {
-      return availableFiles;
-    }
-    
-    return matchedFiles;
+    return pickFilesForQuery(query, availableFiles) as Attachment[];
   };
 
   // Shared Send Logic
@@ -4345,7 +4294,9 @@ ${layer3ExecutionSubstrate}`;
     
     // CRITICAL: For revenue queries, check for Revenue.csv (exclude CRM leads files)
     // Declare early so it can be used in dataReminder
-    const isRevenueQueryCheck = /revenue|revenues|financial|income|earnings|money|rupees|rs\.|₹|generated|contribution|contributing/i.test(cleanText);
+    const queryTopics = detectQueryTopics(cleanText);
+    const isRevenueQueryCheck = queryTopics.has('revenue');
+    const isClusterQueryCheck = queryTopics.has('cluster');
     const hasRevenueFileCheck = csvFiles.some(f => f.name.toLowerCase().includes('revenue') && !f.name.toLowerCase().includes('lead'));
     
     // Add data usage reminder if we have loaded data
@@ -4399,8 +4350,20 @@ ${layer3ExecutionSubstrate}`;
       } else {
         finalPrompt += `**PHASE 1**: Generate ONLY MongoDB aggregation pipelines in \`\`\`mongodb code blocks - NO NUMBERS OR ANALYSIS**\n`;
         finalPrompt += `**PHASE 2**: After receiving query results, provide analysis using EXACT numbers from results**\n\n`;
+        const exampleColl =
+          primaryFile?.collectionName ||
+          (hasRevenueFileCheck
+            ? csvFiles.find((f) => f.name.toLowerCase().includes('revenue'))?.collectionName
+            : null) ||
+          'data_revenue';
+        const exampleSchema = tableSchemas[exampleColl];
         finalPrompt += `**Example of CORRECT Phase 1 response:**\n`;
-        finalPrompt += `\`\`\`mongodb\n{"collection": "data_revenue", "pipeline": [{"$match": {"District": "Thane"}}, {"$group": {"_id": null, "total": {"$sum": "$Total Revenue"}}}]}\n\`\`\`\n`;
+        if (isRevenueQueryCheck && exampleSchema) {
+          finalPrompt += buildRevenueMongoExample(exampleColl, exampleSchema) + '\n';
+        } else {
+          finalPrompt += `\`\`\`mongodb\n{"collection": "${exampleColl}", "pipeline": [{"$group": {"_id": null, "count": {"$sum": 1}}}]}\n\`\`\`\n`;
+        }
+        finalPrompt += buildMongoQueryRules(llmProvider) + '\n';
       }
       finalPrompt += `**Example of WRONG Phase 1 response (DO NOT DO THIS):**\n`;
       finalPrompt += `"The Thane region generated ₹2.71 Crore"\n\n`;
@@ -4414,25 +4377,19 @@ ${layer3ExecutionSubstrate}`;
         if (isRevenueQueryCheck && hasRevenueFileCheck) {
           const revenueFile = csvFiles.find(f => f.name.toLowerCase().includes('revenue') && !f.name.toLowerCase().includes('lead'));
           filesToShow = revenueFile ? [revenueFile] : primaryFile ? [primaryFile] : csvFiles.slice(0, 1);
-          finalPrompt += `🚨 **REVENUE QUERY - USE ONLY Revenue.csv collection** 🚨\n\n`;
+          finalPrompt += `🚨 **REVENUE QUERY - USE ONLY the Revenue file collection below** 🚨\n\n`;
+        } else if (isClusterQueryCheck) {
+          filesToShow = relevantFiles.length > 0 ? relevantFiles : matchFilesToQuery(cleanText, csvFiles);
+          finalPrompt += `🚨 **CLUSTER / OLD vs NEW CENTER QUERY** — use OldVsNewSummary, ClusterSummary, Footfall, File-to-ICSI collections below. Do NOT use $split on col_* fields.\n\n`;
         } else {
-          filesToShow = primaryFile ? [primaryFile] : csvFiles.slice(0, 1);
+          filesToShow = relevantFiles.length > 0 ? relevantFiles : primaryFile ? [primaryFile] : csvFiles.slice(0, 3);
         }
         
-        filesToShow.forEach((att, index) => {
+        filesToShow.slice(0, 8).forEach((att) => {
           if (att.isCsv) {
-            const collName = att.collectionName || 'data_' + att.name.replace(/\.csv$/i, '').replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').toLowerCase();
-            finalPrompt += `\n--- DATA SOURCE ${index + 1}: ${att.name} ---\n`;
-            finalPrompt += `**MongoDB Collection:** \`${collName}\`\n`;
-            finalPrompt += `**Rows:** ${(att.rowCount || 0).toLocaleString()}\n`;
-            if (att.headers) {
-              finalPrompt += `**Columns:** ${att.headers.join(', ')}\n`;
-            }
-            finalPrompt += `**Query Example:**\n`;
-            finalPrompt += `\`\`\`mongodb\n{"collection": "${collName}", "pipeline": [{"$group": {"_id": null, "count": {"$sum": 1}}}]}\n\`\`\`\n`;
-            finalPrompt += `--- END DATA SOURCE ${index + 1} ---\n`;
+            finalPrompt += `\n${formatCollectionSchemaBlock(att, tableSchemas)}\n`;
           } else if (!att.isLarge && att.content && att.content.length < MAX_TEXT_PAYLOAD_SIZE) {
-            finalPrompt += `\n--- FILE ${index + 1}: ${att.name} ---\n${att.content}\n--- END FILE ---\n`;
+            finalPrompt += `\n--- FILE: ${att.name} ---\n${att.content}\n---\n`;
           }
         });
         
@@ -4506,15 +4463,15 @@ ${layer3ExecutionSubstrate}`;
     const runGeneration = async (prompt: string, currentAttempt: number = 0, phase: 1 | 2 = /Query Result:/i.test(prompt) ? 2 : 1): Promise<{ text: string; usage: { promptTokens: number; completionTokens: number; totalTokens: number } }> => {
         const zeroUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
         try {
-            const system = getSystemInstruction(activeFocusCollection);
+            const system = getSystemInstruction(activeFocusCollection, llmProvider);
             const bodyMessages = buildAnthropicMessagesForChat(messagesRef.current as ChatUiMsg[], messageIndex, prompt);
-            const { text: streamedText, usage } = await streamAnthropicChat(system, bodyMessages, (full) => {
+            const { text: streamedText, usage } = await streamLlmChat(system, bodyMessages, (full) => {
                 setMessages(prev => {
                     const updated = [...prev];
                     updated[messageIndex] = { role: 'model', text: full, type: 'text' };
                     return updated;
                 });
-            }, phase);
+            }, phase, llmProvider);
             return { text: streamedText, usage };
         } catch (err: any) {
             console.error('Anthropic chat API error', err);
@@ -4612,8 +4569,12 @@ ${layer3ExecutionSubstrate}`;
                      return updated;
                 });
                 
+                let failedCollection: string | undefined;
+                let failedPipeline: unknown;
                 try {
                     const queryJSON = JSON.parse(queryMatch[1].trim());
+                    failedCollection = queryJSON.collection;
+                    failedPipeline = queryJSON.pipeline;
                     let result: unknown[];
 
                     if (sqlMatch) {
@@ -4693,9 +4654,15 @@ ${layer3ExecutionSubstrate}`;
                              updated[messageIndex].text = friendlyMessage + "\n_⚠️ Retrying with adjusted query..._";
                              return updated;
                         });
-                        const availableCollections = sqlTables.join(', ');
                         const contract = queryContract === 'sql' ? 'sql' : 'mongodb';
-                        const repairPrompt = `The data query failed with error: "${errMsg}". Available collections are: ${availableCollections || 'None'}. Please generate a corrected \`\`\`${contract} query or answer without querying.`;
+                        const repairPrompt = buildMongoRepairPrompt({
+                          error: errMsg,
+                          collection: failedCollection,
+                          failedPipeline,
+                          tableSchemas,
+                          sqlTables,
+                          contract,
+                        });
                         await processResponseWithMongo(repairPrompt, attemptCount + 1, logId);
                     } else {
                         const queryFailedMsg = friendlyMessage + `\n\n_⚠️ Query failed: ${errMsg.substring(0, 100)}. Answering based on available context._`;
@@ -5027,9 +4994,9 @@ ${layer3ExecutionSubstrate}`;
           return null;
       }
       try {
-          const system = getSystemInstruction();
+          const system = getSystemInstruction(null, llmProvider);
           const msgs = buildAnthropicSidecarMessages(messagesRef.current as ChatUiMsg[], prompt);
-          const { text: response, usage } = await completeAnthropicChat(system, msgs);
+          const { text: response, usage } = await completeLlmChat(system, msgs, 2, llmProvider);
           authAPI.reportUsage(usage).catch(() => {});
           const jsonMatch = response.match(/```json\n([\s\S]*?)\n```/) || response.match(/```\n([\s\S]*?)\n```/) || response.match(/\{[\s\S]*\}/);
           if (jsonMatch) {
@@ -5048,9 +5015,9 @@ ${layer3ExecutionSubstrate}`;
           return null;
       }
       try {
-          const system = getSystemInstruction();
+          const system = getSystemInstruction(null, llmProvider);
           const msgs = buildAnthropicSidecarMessages(messagesRef.current as ChatUiMsg[], prompt);
-          const { text: response, usage } = await completeAnthropicChat(system, msgs);
+          const { text: response, usage } = await completeLlmChat(system, msgs, 2, llmProvider);
           authAPI.reportUsage(usage).catch(() => {});
           const jsonMatch = response.match(/```json\n([\s\S]*?)\n```/) || response.match(/```\n([\s\S]*?)\n```/) || response.match(/\{[\s\S]*\}/);
           if (jsonMatch) {
@@ -5126,6 +5093,37 @@ ${layer3ExecutionSubstrate}`;
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <div
+              className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-200 bg-slate-50"
+              title={llmProvider === 'gemini' ? `Answering with ${geminiModelLabel}` : 'Answering with Claude'}
+            >
+              <span className={`text-[11px] font-semibold tracking-wide ${llmProvider === 'gemini' ? 'text-blue-600' : 'text-slate-400'}`}>
+                Gemini
+              </span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={llmProvider === 'claude'}
+                aria-label="Switch between Gemini and Claude"
+                disabled={!llmProviders.claude && !llmProviders.gemini}
+                onClick={() => {
+                  if (llmProvider === 'gemini' && llmProviders.claude) setLlmProvider('claude');
+                  else if (llmProvider === 'claude' && llmProviders.gemini) setLlmProvider('gemini');
+                }}
+                className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${
+                  llmProvider === 'claude' ? 'bg-pink-600' : 'bg-blue-600'
+                } disabled:opacity-40`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
+                    llmProvider === 'claude' ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+              <span className={`text-[11px] font-semibold tracking-wide ${llmProvider === 'claude' ? 'text-pink-600' : 'text-slate-400'}`}>
+                Claude
+              </span>
+            </div>
             <button 
               onClick={() => handleSend("Generate a 'Data Input Summary' based on the INDIRA IVF INTELLIGENCE ENGINE protocols. List all active datasets, categorize them by layer (Acquisition, Demographic, Quality, Operational, Competitive), and identify any critical missing data layers based on the Data Dictionary.")}
               className="hidden md:flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium text-slate-600 hover:bg-slate-50 transition-all active:scale-95 border border-slate-200 hover:border-pink-200 hover:text-pink-700"
@@ -5173,7 +5171,16 @@ ${layer3ExecutionSubstrate}`;
                     <div className="p-2 bg-purple-100 rounded-lg text-purple-700"><Compass size={20} /></div>
                     <div>
                         <h2 className="text-xl font-bold text-slate-800 leading-none">Strategic Nexus</h2>
-                        <p className="text-xs text-slate-500 font-medium mt-1">AI-Driven Insights & Simulation</p>
+                        <p className="text-xs text-slate-500 font-medium mt-1 flex items-center gap-2 flex-wrap">
+                          AI-Driven Insights & Simulation
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                            llmProvider === 'gemini'
+                              ? 'bg-blue-50 text-blue-700 border-blue-200'
+                              : 'bg-pink-50 text-pink-700 border-pink-200'
+                          }`}>
+                            {llmProvider === 'gemini' ? geminiModelLabel : 'Claude'}
+                          </span>
+                        </p>
                     </div>
                   </div>
 

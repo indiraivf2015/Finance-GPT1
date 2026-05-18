@@ -13,7 +13,7 @@ const backendDir = path.resolve(__dirname, '../backend');
 module.exports = {
   apps: [
     {
-      name: 'indira-gpt-api',
+      name: 'finance-gpt-api',
       cwd: backendDir,
       script: 'server.js',
       instances: 1,
@@ -22,7 +22,7 @@ module.exports = {
       max_memory_restart: '1G',
       env: {
         NODE_ENV: 'production',
-        PORT: '5005',
+        PORT: '9005',
       },
       error_file: path.join(backendDir, 'logs/pm2-error.log'),
       out_file: path.join(backendDir, 'logs/pm2-out.log'),
