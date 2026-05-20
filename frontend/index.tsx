@@ -2903,7 +2903,7 @@ async function streamLlmChat(
   messages: { role: 'user' | 'assistant'; content: string }[],
   onTextDelta: (fullSoFar: string) => void,
   phase: 1 | 2 = 2,
-  provider: LlmProvider = 'gemini'
+  provider: LlmProvider = 'claude'
 ): Promise<{ text: string; usage: { promptTokens: number; completionTokens: number; totalTokens: number } }> {
   const token = localStorage.getItem('auth_token');
   if (!token) throw new Error('Not authenticated');
@@ -3010,7 +3010,7 @@ async function completeLlmChat(
   system: string,
   messages: { role: 'user' | 'assistant'; content: string }[],
   phase: 1 | 2 = 2,
-  provider: LlmProvider = 'gemini'
+  provider: LlmProvider = 'claude'
 ): Promise<{ text: string; usage: { promptTokens: number; completionTokens: number; totalTokens: number } }> {
   const token = localStorage.getItem('auth_token');
   if (!token) throw new Error('Not authenticated');
@@ -3081,9 +3081,20 @@ const App = () => {
   const [filesLoaded, setFilesLoaded] = useState(false);
   const [dataEngine, setDataEngine] = useState<'mongo' | 'sql'>('mongo');
   const [queryContract, setQueryContract] = useState<'mongodb' | 'sql'>('mongodb');
-  const llmProvider: LlmProvider = 'gemini';
+  const [llmProvider, setLlmProvider] = useState<LlmProvider>(() => {
+    const saved = localStorage.getItem('llm_provider');
+    return saved === 'gemini' ? 'gemini' : 'claude';
+  });
+  const [llmProviders, setLlmProviders] = useState<{ claude: boolean; gemini: boolean }>({
+    claude: true,
+    gemini: false,
+  });
   const [geminiModelLabel, setGeminiModelLabel] = useState('gemini-3-flash-preview');
   const [activeFocusCollection, setActiveFocusCollection] = useState<string | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem('llm_provider', llmProvider);
+  }, [llmProvider]);
   const isLoadingRef = useRef(false);
   const reloadInProgressRef = useRef(false);
 
@@ -3116,6 +3127,18 @@ const App = () => {
               if (cfg.dataEngine === 'sql') setDataEngine('sql');
               if (cfg.queryContract === 'sql') setQueryContract('sql');
               if (cfg.geminiModel) setGeminiModelLabel(cfg.geminiModel);
+              if (cfg.providers) {
+                setLlmProviders({
+                  claude: cfg.providers.claude !== false,
+                  gemini: !!cfg.providers.gemini,
+                });
+                const saved = localStorage.getItem('llm_provider') === 'gemini' ? 'gemini' : 'claude';
+                if (saved === 'gemini' && !cfg.providers.gemini && cfg.providers.claude) {
+                  setLlmProvider('claude');
+                } else if (saved === 'claude' && !cfg.providers.claude && cfg.providers.gemini) {
+                  setLlmProvider('gemini');
+                }
+              }
             }
           } catch {
             /* keep defaults */
@@ -5025,10 +5048,33 @@ ${layer3ExecutionSubstrate}`;
           <div className="flex items-center gap-3">
             <div
               className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-200 bg-slate-50"
-              title={`Answering with ${geminiModelLabel}`}
+              title={llmProvider === 'gemini' ? `Answering with ${geminiModelLabel}` : 'Answering with Claude'}
             >
-              <span className="text-[11px] font-semibold tracking-wide text-blue-600">
-                Gemini · {geminiModelLabel}
+              <span className={`text-[11px] font-semibold tracking-wide ${llmProvider === 'gemini' ? 'text-blue-600' : 'text-slate-400'}`}>
+                Gemini
+              </span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={llmProvider === 'claude'}
+                aria-label="Switch between Gemini and Claude"
+                disabled={!llmProviders.claude && !llmProviders.gemini}
+                onClick={() => {
+                  if (llmProvider === 'gemini' && llmProviders.claude) setLlmProvider('claude');
+                  else if (llmProvider === 'claude' && llmProviders.gemini) setLlmProvider('gemini');
+                }}
+                className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${
+                  llmProvider === 'claude' ? 'bg-pink-600' : 'bg-blue-600'
+                } disabled:opacity-40`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
+                    llmProvider === 'claude' ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+              <span className={`text-[11px] font-semibold tracking-wide ${llmProvider === 'claude' ? 'text-pink-600' : 'text-slate-400'}`}>
+                Claude
               </span>
             </div>
             <button 
@@ -5080,8 +5126,12 @@ ${layer3ExecutionSubstrate}`;
                         <h2 className="text-xl font-bold text-slate-800 leading-none">Strategic Nexus</h2>
                         <p className="text-xs text-slate-500 font-medium mt-1 flex items-center gap-2 flex-wrap">
                           AI-Driven Insights & Simulation
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold border bg-blue-50 text-blue-700 border-blue-200">
-                            {geminiModelLabel}
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                            llmProvider === 'gemini'
+                              ? 'bg-blue-50 text-blue-700 border-blue-200'
+                              : 'bg-pink-50 text-pink-700 border-pink-200'
+                          }`}>
+                            {llmProvider === 'gemini' ? geminiModelLabel : 'Claude'}
                           </span>
                         </p>
                     </div>
