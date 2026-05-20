@@ -898,10 +898,10 @@ app.get('/api/config', authenticateToken, (req, res) => {
     anthropicModelAnswer: resolveAnthropicModel(2),
     geminiModel: getGeminiModel(),
     providers: {
-      claude: !!process.env.ANTHROPIC_API_KEY?.trim(),
+      claude: false,
       gemini: !!getGeminiClient(),
     },
-    defaultProvider: 'claude',
+    defaultProvider: 'gemini',
   });
 });
 
@@ -1124,9 +1124,9 @@ app.post('/api/usage', authenticateToken, async (req, res) => {
   }
 });
 
-// --- LLM chat (Claude or Gemini; API keys stay on server) ---
-function resolveChatProvider(body) {
-  return body?.provider === 'gemini' ? 'gemini' : 'claude';
+// --- LLM chat (Gemini-only; Claude path retained but never selected) ---
+function resolveChatProvider(_body) {
+  return 'gemini';
 }
 
 app.post('/api/chat', authenticateToken, async (req, res) => {

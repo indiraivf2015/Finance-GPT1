@@ -100,56 +100,11 @@ const CHART_COLORS = ['#db2777', '#059669', '#d97706', '#7c3aed', '#2563eb', '#d
 
 // --- Nomenclature Definition ---
 const DATA_LAYERS = [
-  {
-    id: 'acquisition',
-    title: 'A. ACQUISITION LAYER',
-    subtitle: 'Marketing Inflow & Attribution',
-    icon: Users,
-    color: 'bg-blue-500',
-    textColor: 'text-blue-600',
-    borderColor: 'border-blue-100',
-    files: ['CRM leads.csv', 'META Instant Form Leads.csv', 'Source Medium.csv', 'Channel.csv', 'landing page.csv']
-  },
-  {
-    id: 'demographic',
-    title: 'B. DEMOGRAPHIC LAYER',
-    subtitle: 'Slicing Dimensions',
-    icon: MapPin,
-    color: 'bg-emerald-500',
-    textColor: 'text-emerald-600',
-    borderColor: 'border-emerald-100',
-    files: ['Region.csv', 'city.csv', 'Date.csv', 'Hour.csv', 'Gender.csv', 'Device and Inpur.csv']
-  },
-  {
-    id: 'quality',
-    title: 'C. QUALITY LAYER',
-    subtitle: 'The "Empathy Filter"',
-    icon: Heart,
-    color: 'bg-pink-500',
-    textColor: 'text-pink-600',
-    borderColor: 'border-pink-100',
-    files: ['Call_Center_Audit.csv']
-  },
-  {
-    id: 'operational',
-    title: 'D. OPERATIONAL LAYER',
-    subtitle: 'Conversion & Revenue',
-    icon: Activity,
-    color: 'bg-amber-500',
-    textColor: 'text-amber-600',
-    borderColor: 'border-amber-100',
-    files: ['Footfall Data.csv', 'File to ICSI.csv']
-  },
-  {
-    id: 'competitive',
-    title: 'E. COMPETITIVE LAYER',
-    subtitle: 'Market Intelligence',
-    icon: Target,
-    color: 'bg-rose-500',
-    textColor: 'text-rose-600',
-    borderColor: 'border-rose-100',
-    files: ['Nova H1 Opu data.csv', 'Market Share Analysis.csv', 'Competetion.csv']
-  }
+  { id: 'master', title: 'A. MASTER / DIMENSION LAYER', subtitle: 'Center → Cluster → Entity lookup', icon: Database, color: 'bg-slate-500', textColor: 'text-slate-600', borderColor: 'border-slate-100', files: ['24_Center_Master.csv', '01_Index_of_Fortnightly.csv'] },
+  { id: 'operational', title: 'B. OPERATIONAL VOLUME LAYER', subtitle: 'Footfall & ICSI cycle funnel', icon: Activity, color: 'bg-blue-500', textColor: 'text-blue-600', borderColor: 'border-blue-100', files: ['17_Footfall.csv', '19_ICSI.csv'] },
+  { id: 'financial', title: 'C. FINANCIAL LAYER', subtitle: 'Revenue, Pharmacy & Collections', icon: DollarSign, color: 'bg-emerald-500', textColor: 'text-emerald-600', borderColor: 'border-emerald-100', files: ['21_Revenue.csv', '22_Pharmacy.csv', '23_CollectionDayonDay.csv'] },
+  { id: 'mis_center', title: 'D. MIS SUMMARY — CENTER', subtitle: 'Center highlights & IIHL analysis', icon: BarChart3, color: 'bg-amber-500', textColor: 'text-amber-600', borderColor: 'border-amber-100', files: ['02_Top_10_Centers_Highlights_2526.csv', '03_All_Centers_Highlights_2526.csv', '04_All_Centers_Highlights_YTD.csv', '06_CenterlevelIIHLAnalysis2526.csv', '08_CenterlevelDetailedAnalysisYTD.csv'] },
+  { id: 'mis_strategic', title: 'E. MIS SUMMARY — CLUSTER & STRATEGIC', subtitle: 'Cluster, Old-vs-New & business outlook', icon: Layers, color: 'bg-pink-500', textColor: 'text-pink-600', borderColor: 'border-pink-100', files: ['05_SummaryOverview.csv', '09_OldVsNewSummary.csv', '10_ClusterSummary.csv', '13_ClusterPerformanceReportYTD.csv', '14_ClusterLevelPerformanceRepo2526.csv', '15_Sheet3.csv'] }
 ];
 
 // --- Helpers ---
@@ -2948,7 +2903,7 @@ async function streamLlmChat(
   messages: { role: 'user' | 'assistant'; content: string }[],
   onTextDelta: (fullSoFar: string) => void,
   phase: 1 | 2 = 2,
-  provider: LlmProvider = 'claude'
+  provider: LlmProvider = 'gemini'
 ): Promise<{ text: string; usage: { promptTokens: number; completionTokens: number; totalTokens: number } }> {
   const token = localStorage.getItem('auth_token');
   if (!token) throw new Error('Not authenticated');
@@ -3055,7 +3010,7 @@ async function completeLlmChat(
   system: string,
   messages: { role: 'user' | 'assistant'; content: string }[],
   phase: 1 | 2 = 2,
-  provider: LlmProvider = 'claude'
+  provider: LlmProvider = 'gemini'
 ): Promise<{ text: string; usage: { promptTokens: number; completionTokens: number; totalTokens: number } }> {
   const token = localStorage.getItem('auth_token');
   if (!token) throw new Error('Not authenticated');
@@ -3103,7 +3058,7 @@ const App = () => {
   // JSON block is stripped from `text` — exactly as ```mongodb``` blocks are —
   // and replaced with a Download button in the rendered message.
   const [messages, setMessages] = usePersistentState<Array<{role: 'user' | 'model' | 'error', text: string, type?: 'text' | 'simulation', artifact?: { downloadId: string; fileName: string }}>>('chat_messages', [
-    { role: 'model', text: "Namaste. I am INDIRA GPT, your partner in fertility strategy.\n\nI am here to help us serve our patients with compassion and scientific excellence.\n\n📊 **Data Pre-loaded**: All CSV files are automatically loaded and ready for analysis. You can ask questions about your data immediately!", type: 'text' }
+    { role: 'model', text: "Namaste. I am INDIRA GPT, your performance & strategy partner for Indira IVF.\n\n📊 **MIS Pre-loaded**: Centre & cluster Footfall, ICSI, Revenue, Pharmacy and Collections data is loaded and ready. Ask me about revenue, conversion, cluster performance, or centre highlights.", type: 'text' }
   ]);
   const [input, setInput] = useState('');
   const [simInput, setSimInput] = useState('');
@@ -3126,20 +3081,9 @@ const App = () => {
   const [filesLoaded, setFilesLoaded] = useState(false);
   const [dataEngine, setDataEngine] = useState<'mongo' | 'sql'>('mongo');
   const [queryContract, setQueryContract] = useState<'mongodb' | 'sql'>('mongodb');
-  const [llmProvider, setLlmProvider] = useState<LlmProvider>(() => {
-    const saved = localStorage.getItem('llm_provider');
-    return saved === 'gemini' ? 'gemini' : 'claude';
-  });
-  const [llmProviders, setLlmProviders] = useState<{ claude: boolean; gemini: boolean }>({
-    claude: true,
-    gemini: false,
-  });
+  const llmProvider: LlmProvider = 'gemini';
   const [geminiModelLabel, setGeminiModelLabel] = useState('gemini-3-flash-preview');
   const [activeFocusCollection, setActiveFocusCollection] = useState<string | null>(null);
-
-  useEffect(() => {
-    localStorage.setItem('llm_provider', llmProvider);
-  }, [llmProvider]);
   const isLoadingRef = useRef(false);
   const reloadInProgressRef = useRef(false);
 
@@ -3172,18 +3116,6 @@ const App = () => {
               if (cfg.dataEngine === 'sql') setDataEngine('sql');
               if (cfg.queryContract === 'sql') setQueryContract('sql');
               if (cfg.geminiModel) setGeminiModelLabel(cfg.geminiModel);
-              if (cfg.providers) {
-                setLlmProviders({
-                  claude: cfg.providers.claude !== false,
-                  gemini: !!cfg.providers.gemini,
-                });
-                const saved = localStorage.getItem('llm_provider') === 'gemini' ? 'gemini' : 'claude';
-                if (saved === 'gemini' && !cfg.providers.gemini && cfg.providers.claude) {
-                  setLlmProvider('claude');
-                } else if (saved === 'claude' && !cfg.providers.claude && cfg.providers.gemini) {
-                  setLlmProvider('gemini');
-                }
-              }
             }
           } catch {
             /* keep defaults */
@@ -3207,7 +3139,7 @@ const App = () => {
   // Clean corrupted messages (null/undefined or missing text) from persisted state on mount
   useEffect(() => {
     setMessages(prev => {
-      if (!Array.isArray(prev)) return [{ role: 'model', text: "Namaste. I am INDIRA GPT, your partner in fertility strategy.\n\nI am here to help us serve our patients with compassion and scientific excellence.\n\n📊 **Data Pre-loaded**: All CSV files are automatically loaded and ready for analysis. You can ask questions about your data immediately!", type: 'text' as const }];
+      if (!Array.isArray(prev)) return [{ role: 'model', text: "Namaste. I am INDIRA GPT, your performance & strategy partner for Indira IVF.\n\n📊 **MIS Pre-loaded**: Centre & cluster Footfall, ICSI, Revenue, Pharmacy and Collections data is loaded and ready. Ask me about revenue, conversion, cluster performance, or centre highlights.", type: 'text' as const }];
       const cleaned = prev.filter(msg => msg != null && typeof (msg as { text?: unknown }).text === 'string');
       return cleaned.length === prev.length ? prev : cleaned;
     });
@@ -3816,8 +3748,8 @@ access-filtered collection list. Use this to execute the answer.
 You are **INDIRA GPT**, an elite Strategy Consultant for Indira IVF. You are not just a data analyst; you are a compassionate partner in the parenthood journey. 
 
 **MANDATORY STRATEGIC DIRECTIVE:**
-You must synthesize answers from **ALL available sources** (Acquisition, Demographic, Quality, Operational, Competitive) to provide a holistic view.
-**CITATION RULE:** You MUST explicitly quote your sources. Example: "As seen in [Table: Call_Center, Row: 5], patient anxiety peaks on Mondays..." or "CRM data indicates a 20% drop..."
+You must synthesize answers across the loaded MIS layers (Master, Operational Volume, Financial, Center MIS, Cluster & Strategic MIS) to provide a holistic view.
+**CITATION RULE:** You MUST explicitly quote your sources. Example: "As seen in [21_Revenue.csv / data_21_revenue], Cluster Ahmedabad total Revenue is..." or "17_Footfall.csv shows footfall of..."
 
 **CAPABILITIES:**
 1. **Data Engine (${queryContract === 'sql' ? 'SQL / DuckDB' : 'MongoDB'}):** ${queryContract === 'sql'
@@ -3894,64 +3826,62 @@ IVF is still considered taboo in many parts of India. Patients carry immense **a
 
 **SYSTEM CONTEXT: INDIRA IVF INTELLIGENCE ENGINE (Glossary)**
 DOMAIN: IVF Healthcare, Reproductive Strategy, Patient Journey Optimization. 
-CORE OBJECTIVE: Optimize the funnel from "Digital Lead" to "ICSI Treatment Start" while monitoring Competitor (Nova) activity.
+CORE OBJECTIVE: Track and explain centre- and cluster-level financial and operational performance — Footfall → ICSI cycles → Revenue/Collections — versus YTD and prior year, surfacing variances and their drivers.
 
-1. **DATA DICTIONARY & FILE ROLES**
-A. THE ACQUISITION LAYER (Marketing Inflow)
-- **CRM leads.csv**: PRIMARY SOURCE OF TRUTH. Master list of patient enquiries.
-- **META Instant Form Leads**: High Volume / Low Intent. Requires aggressive filtration.
-- **Source Medium.csv & Channel.csv**: Attribution data. Calculate Cost Per Lead (CPL) and Channel ROI.
-- **landing page.csv**: Patient Intent Indicator. Pages visited define anxiety level.
+1. **DATA DICTIONARY & FILE ROLES** (Indira IVF Fortnightly MIS pack)
 
-B. THE DEMOGRAPHIC LAYER (Slicing Dimensions)
-- **Region.csv & city.csv**: Geospatial logic. "Nova Threats" vs. "Indira Strongholds".
-- **Date.csv, Hour.csv**: Temporal logic. Use Hour.csv to identify peak anxiety times.
-- **Gender.csv**: Patient segmentation (Male vs. Female factor).
-- **Device and Inpur.csv**: User Experience (UX) technical data.
+A. MASTER / DIMENSION LAYER
+- **24_Center_Master.csv**: AUTHORITATIVE DIMENSION. ERP Code → Center Name → Cluster Name → Entity (Entity1/Entity2) and Category/Type (B2C/B2B). Resolve/validate every centre or cluster name here and use it to roll centres up to clusters.
+- **01_Index_of_Fortnightly.csv**: Index/cover sheet. Effectively empty — do NOT query for figures.
 
-C. THE QUALITY LAYER (The "Empathy Filter")
-- **Call_Center_Audit.csv**: CRITICAL QUALITY METRIC.
-- **Key Columns**: Customer Emotion, Agent Emotion, Fatal Count.
-- **Logic**: High "Fatal Count" or Low "Empathy Score" correlates to "Footfall" drop-offs.
+B. OPERATIONAL VOLUME LAYER (the funnel)
+- **17_Footfall.csv**: Patient first-visit / footfall log. Cols incl. Center Code, Center Name, Cluster, Month, Category (B2C/B2B), Entity, FirstVisitDate, UHID, Main/OPD, VisitCategoryName, IsInfertility, IsSemenAnalysis. Footfall volume = count rows or distinct UHID.
+- **19_ICSI.csv**: THE GOLDEN OPERATIONAL METRIC. ICSI cycle records. Cols incl. Center Code, Center Name, Cluster, Month, Category, IcsiDate, PatientMappedUHID, CycleStartClinicName, IsDonor, OocyteSourceName, SpermSourceName. NOTE: first physical row is blank, header is on row 2 — if a query returns null/zero unexpectedly, flag the parse issue; never fabricate.
 
-D. THE OPERATIONAL LAYER (Conversion & Revenue)
-- **Footfall Data_[Month].csv**: Physical Center Visits. Measures "Show Rate".
-- **File to ICSI [Date].csv**: THE GOLDEN METRIC. Tracks conversion from File Generation to ICSI. Low Ratio indicates "Counseling Failure," not "Marketing Failure."
-- **Revenue.csv**: Financial performance data. Use for revenue analysis, regional revenue, and financial insights.
+C. FINANCIAL LAYER
+- **21_Revenue.csv**: PRIMARY REVENUE SOURCE OF TRUTH. Cols incl. Center Code, Center Name, Cluster, Month, CommonDate, Clinic, MainGroup (e.g. "IVF Revenue"), BillingRequestDate, **Revenue** ($sum this). Use ONLY this file for revenue figures.
+- **22_Pharmacy.csv**: Pharmacy revenue. Cols incl. Center/Cluster, Month, TaxableAmount, ReturnTaxableAmount, TaxAmount, ReturnTaxAmount, **Total Collection** (net of returns — $sum for pharmacy collection).
+- **23_CollectionDayonDay.csv**: Daily cash collections. Cols incl. Center/Cluster, Month, Datename, ClinicName, **Collections** ($sum this). Use for collection trend / day-on-day cash.
 
-E. THE COMPETITIVE LAYER (Market Intelligence)
-- **Nova H1 Opu data...csv**: PRIMARY THREAT. Tracks Nova IVF's "OPU" volume. Benchmark for market share.
-- **Market Share Analysis...csv**: Macro-level dominance data.
-- **Competetion.csv**: General landscape data.
+D. MIS SUMMARY — CENTER (pivot exports; narrative/context only, NOT reliable for $sum due to blank rows & merged headers — prefer Layers B/C for hard numbers)
+- **02_Top_10_Centers_Highlights_2526.csv**: Top-10 centre highlights (Footfall, FF→ICSI, Collection, Revenue, EBITDA) FY25-26.
+- **03_All_Centers_Highlights_2526.csv** / **04_All_Centers_Highlights_YTD.csv**: All-centre highlights, fortnight vs YTD.
+- **06_CenterlevelIIHLAnalysis2526.csv**: Centre-level IIHL entity analysis, current vs LYTD with growth bands.
+- **08_CenterlevelDetailedAnalysisYTD.csv**: Detailed centre-level YTD analysis.
+
+E. MIS SUMMARY — CLUSTER & STRATEGIC (pivot exports; context only — same aggregation caveat as D)
+- **05_SummaryOverview.csv**: Overall business outlook + FY focus areas.
+- **09_OldVsNewSummary.csv**: Old vs New centre split and focus areas.
+- **10_ClusterSummary.csv**: Cluster-level summary.
+- **13_ClusterPerformanceReportYTD.csv** / **14_ClusterLevelPerformanceRepo2526.csv**: Cluster performance by channel (B2C+B2B / B2C / B2B), YTD vs FY.
+- **15_Sheet3.csv**: Footfall/ICSI/Cycle/Collection LYTD vs YTD pivot.
 
 2. **LOGIC HIERARCHY & RELATIONAL RULES**
-- **The Funnel Logic**: [CRM Leads] -> [Call Center Audit] -> [Footfall] -> [File to ICSI]
-  - *Rule*: Never analyze "Leads" in isolation. Always weigh against "ICSI" conversion.
-- **The "Nova" Benchmark**:
-  - *Rule*: When analyzing Regional performance, ALWAYS cross-reference Nova H1 Opu data. If Indira growth is flat but Nova is rising, flag as a "RED ALERT".
-- **The Attribution Rule**:
-  - *Rule*: If source is Meta Instant Form, assign lower "Lead Score" probability than Google Organic.
-- **The Empathy Correlation**:
-  - *Rule*: High "Agent Emotion: Negative" in Call_Center_Audit.csv is a leading indicator for lower Footfall.
+- **The Funnel Logic**: [Footfall] -> [ICSI Cycles] -> [Revenue / Collections]. Never read volume in isolation — always weigh Footfall against ICSI conversion and Revenue/Collection realisation.
+- **The Master Join Rule**: Resolve every centre to its Cluster/Entity via 24_Center_Master.csv before any cluster roll-up. Never invent a mapping.
+- **The Source-of-Truth Rule**: Revenue → 21_Revenue.csv only; Pharmacy → 22_Pharmacy.csv; Cash collection → 23_CollectionDayonDay.csv; Footfall → 17_Footfall.csv; ICSI cycles → 19_ICSI.csv. Treat Layer D/E sheets as commentary, not the figure source, when a transactional file exists.
+- **The Period Rule**: Distinguish fortnight (2526) vs YTD vs LYTD/prior-year explicitly; never blend periods silently.
 
 3. **KEY METRICS & FORMULAS**
-- Conversion Rate (Sales): (Footfall Count / CRM Lead Count) * 100
-- Conversion Rate (Clinical/Revenue): (ICSI Count / File Count) * 100 (Most Critical)
-- Market Share Gap: (Indira OPU Volume - Nova OPU Volume)
-- Fatal Error Rate: (Sum of Fatal Counts / Total Calls Audited)
+- Footfall→ICSI Conversion: (ICSI Cycle Count / Footfall Count) * 100
+- Revenue per ICSI: (Sum Revenue / ICSI Cycle Count)
+- Net Pharmacy Collection: Sum of "Total Collection" (already net of returns)
+- Collection vs Revenue gap: (Sum Collections − Sum Revenue) for same period/centre
+- YoY / vs-YTD Growth %: (Current − Prior) / Prior * 100, periods kept separate
 
 **AVAILABLE DATA SOURCES (MongoDB Collections):**
 ${accessibleTableNames.length > 0 ? formatAccessibleSourcesList(accessibleTableNames, accessibleSchemas) : 'No data sources currently available. Please wait for data to load.'}
 
 **CRITICAL FILE SELECTION RULES (MANDATORY):**
-- **REVENUE queries** → Use "Revenue.csv" file ONLY (NOT CRM leads.csv or other files)
-- **CALL/CALL CENTER queries** → Use "Call_Center_Audit.csv" file
-- **LEAD/CRM queries** → Use "CRM leads.csv" file
-- **CONVERSION/TREATMENT queries** → Use files with "conversion", "treatment", or "ICSI" in the name
-- **MARKET SHARE/COMPETITION queries** → Use "Market Share Analysis.csv" or "Competetion.csv" files
-- **REGIONAL/GEOGRAPHIC queries** → Use "Region.csv" or "city.csv" files (NOT Revenue.csv unless explicitly asking for revenue by region)
-- **ALWAYS match the user's query topic to the correct CSV file name**
-- **DO NOT assume or guess which files to use - match the query keywords to file names**
+- **REVENUE queries** → "21_Revenue.csv" ONLY ($sum \`Revenue\`; never a highlights/summary sheet)
+- **PHARMACY queries** → "22_Pharmacy.csv" ($sum \`Total Collection\`)
+- **COLLECTION / CASH / DAY-ON-DAY queries** → "23_CollectionDayonDay.csv" ($sum \`Collections\`)
+- **FOOTFALL / FIRST-VISIT / PATIENT-VOLUME queries** → "17_Footfall.csv"
+- **ICSI / CYCLE / CONVERSION queries** → "19_ICSI.csv" (header on row 2 — flag parse anomalies, don't fabricate)
+- **CENTER ↔ CLUSTER / ENTITY mapping** → "24_Center_Master.csv" before any cluster roll-up
+- **CLUSTER PERFORMANCE / OLD-vs-NEW / BUSINESS OUTLOOK narrative** → Layer D/E summary sheets for commentary ONLY; cite the transactional file for any hard number
+- **ALWAYS prefer the transactional file (Layers B/C) over a pivot summary when both could answer**
+- **DO NOT assume or guess — match query keywords to the file roles above**
 
 ${parseQualityWarnings.length > 0 ? `**PARSE-QUALITY WARNINGS (proactively flag these to the user):**
 ${parseQualityWarnings.join('\n')}
@@ -3977,8 +3907,8 @@ When a user asks for totals/sums on a flagged column, do NOT silently aggregate.
 **HOW TO GENERATE MONGODB QUERIES:**
 When you need to query data, output a \`\`\`mongodb code block containing a JSON object with "collection" and "pipeline" keys.
 Use EXACT collection and column names from AVAILABLE DATA SOURCES above (including types).
-- For Gujarat / state revenue: use \`StateName\` if listed (not \`State\` unless listed).
-- For revenue totals: $sum on numeric columns such as \`Total_Revenue\`, \`IVF_Revenue\`, etc.
+- For centre / cluster revenue: group by \`Cluster\` or \`Center Name\` (validate names via 24_Center_Master.csv).
+- For revenue totals: $sum the \`Revenue\` column in data_21_revenue; for collections $sum \`Collections\` (data_23_collectiondayonday) or \`Total Collection\` (data_22_pharmacy).
 - NEVER use $split — data is already columnar in MongoDB.
 - The "collection" field must match a collection name listed above exactly.
 - For COUNT: { "$group": { "_id": null, "count": { "$sum": 1 } } }
@@ -4292,7 +4222,7 @@ ${layer3ExecutionSubstrate}`;
       }
     }
     
-    // CRITICAL: For revenue queries, check for Revenue.csv (exclude CRM leads files)
+    // CRITICAL: For revenue queries, use 21_Revenue.csv (transactional source of truth)
     // Declare early so it can be used in dataReminder
     const queryTopics = detectQueryTopics(cleanText);
     const isRevenueQueryCheck = queryTopics.has('revenue');
@@ -4303,16 +4233,16 @@ ${layer3ExecutionSubstrate}`;
     let dataReminder = '';
     if (csvFiles.length > 0) {
       if (isRevenueQueryCheck && hasRevenueFileCheck) {
-        // CRITICAL: Revenue queries MUST use Revenue.csv ONLY
+        // CRITICAL: Revenue queries MUST use 21_Revenue.csv ONLY
         const revenueFile = csvFiles.find(f => f.name.toLowerCase().includes('revenue') && !f.name.toLowerCase().includes('lead'));
         if (revenueFile) {
           dataReminder = `\n\n🚨 **CRITICAL FILE SELECTION FOR REVENUE QUERY** 🚨\n`;
-          dataReminder += `**YOU ARE ASKED ABOUT REVENUE - YOU MUST USE "Revenue.csv" FILE ONLY**\n\n`;
-          dataReminder += `**DO NOT use "CRM leads.csv", "CRM leads 2.csv", or any other file**\n`;
-          dataReminder += `**ONLY use "Revenue.csv" for revenue-related queries**\n\n`;
+          dataReminder += `**YOU ARE ASKED ABOUT REVENUE - YOU MUST USE "21_Revenue.csv" ONLY ($sum \`Revenue\`)**\n\n`;
+          dataReminder += `**DO NOT use MIS pivot/highlight sheets, pharmacy, or collection files for IVF revenue totals**\n`;
+          dataReminder += `**ONLY use "21_Revenue.csv" for revenue-related queries**\n\n`;
           dataReminder += `**The user asked: "${cleanText}"**\n`;
           dataReminder += `**You MUST analyze data from: ${revenueFile.name}**\n\n`;
-          dataReminder += `⚠️ CRITICAL: If you mention any other CSV file (like CRM leads), you are WRONG. Use ONLY Revenue.csv.\n\n`;
+          dataReminder += `⚠️ CRITICAL: If you use a Layer D/E summary sheet for a revenue figure, you are WRONG. Use ONLY 21_Revenue.csv.\n\n`;
         }
       } else if (relevantFiles.length > 0 && relevantFiles.length < csvFiles.length) {
         // Specific files matched - tell Gemini to use these
@@ -4377,10 +4307,10 @@ ${layer3ExecutionSubstrate}`;
         if (isRevenueQueryCheck && hasRevenueFileCheck) {
           const revenueFile = csvFiles.find(f => f.name.toLowerCase().includes('revenue') && !f.name.toLowerCase().includes('lead'));
           filesToShow = revenueFile ? [revenueFile] : primaryFile ? [primaryFile] : csvFiles.slice(0, 1);
-          finalPrompt += `🚨 **REVENUE QUERY - USE ONLY the Revenue file collection below** 🚨\n\n`;
+          finalPrompt += `🚨 **REVENUE QUERY - USE ONLY 21_Revenue.csv (data_21_revenue) below — $sum \`Revenue\`** 🚨\n\n`;
         } else if (isClusterQueryCheck) {
           filesToShow = relevantFiles.length > 0 ? relevantFiles : matchFilesToQuery(cleanText, csvFiles);
-          finalPrompt += `🚨 **CLUSTER / OLD vs NEW CENTER QUERY** — use OldVsNewSummary, ClusterSummary, Footfall, File-to-ICSI collections below. Do NOT use $split on col_* fields.\n\n`;
+          finalPrompt += `🚨 **CLUSTER / OLD-vs-NEW QUERY** — use 09_OldVsNewSummary, 10_ClusterSummary, 17_Footfall, 19_ICSI for hard numbers; Layer D/E for narrative. Do NOT use $split on col_* fields.\n\n`;
         } else {
           filesToShow = relevantFiles.length > 0 ? relevantFiles : primaryFile ? [primaryFile] : csvFiles.slice(0, 3);
         }
@@ -5095,37 +5025,14 @@ ${layer3ExecutionSubstrate}`;
           <div className="flex items-center gap-3">
             <div
               className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-200 bg-slate-50"
-              title={llmProvider === 'gemini' ? `Answering with ${geminiModelLabel}` : 'Answering with Claude'}
+              title={`Answering with ${geminiModelLabel}`}
             >
-              <span className={`text-[11px] font-semibold tracking-wide ${llmProvider === 'gemini' ? 'text-blue-600' : 'text-slate-400'}`}>
-                Gemini
-              </span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={llmProvider === 'claude'}
-                aria-label="Switch between Gemini and Claude"
-                disabled={!llmProviders.claude && !llmProviders.gemini}
-                onClick={() => {
-                  if (llmProvider === 'gemini' && llmProviders.claude) setLlmProvider('claude');
-                  else if (llmProvider === 'claude' && llmProviders.gemini) setLlmProvider('gemini');
-                }}
-                className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${
-                  llmProvider === 'claude' ? 'bg-pink-600' : 'bg-blue-600'
-                } disabled:opacity-40`}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                    llmProvider === 'claude' ? 'translate-x-5' : 'translate-x-0'
-                  }`}
-                />
-              </button>
-              <span className={`text-[11px] font-semibold tracking-wide ${llmProvider === 'claude' ? 'text-pink-600' : 'text-slate-400'}`}>
-                Claude
+              <span className="text-[11px] font-semibold tracking-wide text-blue-600">
+                Gemini · {geminiModelLabel}
               </span>
             </div>
             <button 
-              onClick={() => handleSend("Generate a 'Data Input Summary' based on the INDIRA IVF INTELLIGENCE ENGINE protocols. List all active datasets, categorize them by layer (Acquisition, Demographic, Quality, Operational, Competitive), and identify any critical missing data layers based on the Data Dictionary.")}
+              onClick={() => handleSend("Generate a 'Data Input Summary'. List all active datasets, categorize them by layer (Master, Operational Volume, Financial, Center MIS, Cluster & Strategic MIS), and identify any critical missing data based on the Data Dictionary.")}
               className="hidden md:flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium text-slate-600 hover:bg-slate-50 transition-all active:scale-95 border border-slate-200 hover:border-pink-200 hover:text-pink-700"
             >
                <FileSearch size={16} />
@@ -5173,12 +5080,8 @@ ${layer3ExecutionSubstrate}`;
                         <h2 className="text-xl font-bold text-slate-800 leading-none">Strategic Nexus</h2>
                         <p className="text-xs text-slate-500 font-medium mt-1 flex items-center gap-2 flex-wrap">
                           AI-Driven Insights & Simulation
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
-                            llmProvider === 'gemini'
-                              ? 'bg-blue-50 text-blue-700 border-blue-200'
-                              : 'bg-pink-50 text-pink-700 border-pink-200'
-                          }`}>
-                            {llmProvider === 'gemini' ? geminiModelLabel : 'Claude'}
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold border bg-blue-50 text-blue-700 border-blue-200">
+                            {geminiModelLabel}
                           </span>
                         </p>
                     </div>
