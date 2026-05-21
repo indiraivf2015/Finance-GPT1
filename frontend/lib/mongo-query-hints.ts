@@ -12,6 +12,11 @@ export type CollectionSchema = {
     inferred: 'numeric' | 'text' | 'mixed';
     coercedPct: number;
   }>;
+  /** First N parsed rows (each is a column→value map) used to show the LLM
+   *  the EXACT stored shape of values so it stops inventing filters like
+   *  `Center Name: "Pune"` (real value: "Pune Aundh") or `Month: "Jan-26"`
+   *  (real value: "2026-01-01"). */
+  sample?: Array<Record<string, unknown>>;
 };
 
 export type FileAttachment = {
@@ -145,6 +150,46 @@ function collNameFromAtt(att: FileAttachment): string {
   );
 }
 
+/** Render up to 3 distinct sample values for the columns the LLM is most
+ *  likely to filter on (dimensions, dates, IDs) so it uses the EXACT stored
+ *  format instead of guessing ("Pune" vs "Pune Aundh", "Jan-26" vs
+ *  "2026-01-01", etc.). Only included for text / mixed columns — numeric
+ *  columns rarely have format ambiguity. */
+function formatSampleValuesBlock(
+  columns: string[],
+  types: Record<string, string>,
+  sample: Array<Record<string, unknown>> | undefined
+): string {
+  if (!sample || sample.length === 0) return '';
+  const FILTER_COL_RX =
+    /(name|code|id|cluster|center|centre|region|state|district|city|zone|month|date|category|entity|type|status|clinic|group|gender|source|channel)/i;
+  const filterCols = columns.filter((c) => {
+    const t = (types[c] || 'string').toLowerCase();
+    if (t === 'number' || t === 'int' || t === 'integer' || t === 'double' || t === 'float') return false;
+    return FILTER_COL_RX.test(c);
+  });
+  if (filterCols.length === 0) return '';
+  const lines: string[] = [];
+  for (const col of filterCols.slice(0, 12)) {
+    const seen = new Set<string>();
+    for (const row of sample) {
+      const v = row?.[col];
+      if (v === null || v === undefined || v === '') continue;
+      const s = String(v);
+      if (s.length > 60) continue;
+      seen.add(s);
+      if (seen.size >= 3) break;
+    }
+    if (seen.size === 0) continue;
+    const samples = Array.from(seen)
+      .map((s) => `"${s}"`)
+      .join(', ');
+    lines.push(`    - \`${col}\`: ${samples}`);
+  }
+  if (lines.length === 0) return '';
+  return `\n  - **Sample stored values (USE EXACTLY THIS FORMAT in $match):**\n${lines.join('\n')}`;
+}
+
 export function formatCollectionSchemaBlock(
   att: FileAttachment,
   tableSchemas: Record<string, CollectionSchema>
@@ -154,6 +199,7 @@ export function formatCollectionSchemaBlock(
   const columns = schema?.columns || att.headers || [];
   const types = schema?.columnTypes || att.columnTypes || {};
   const rowCount = schema?.rowCount ?? att.rowCount ?? 0;
+  const sample = schema?.sample;
 
   const colLines = columns
     .map((c) => {
@@ -170,11 +216,13 @@ export function formatCollectionSchemaBlock(
 
   let hints = '';
   if (geoCols.length) {
-    hints += `\n  - **Geography:** use ${geoCols.map((g) => `\`${g}\``).join(', ')}. For Gujarat use \`StateName\` if present (not \`State\` unless listed).`;
+    hints += `\n  - **Geography (use \`$regex\` with \`$options:"i"\` — values may be sub-centres like "Pune Aundh"):** ${geoCols.map((g) => `\`${g}\``).join(', ')}`;
   }
   if (numCols.length) {
     hints += `\n  - **Metrics ($sum):** ${numCols.slice(0, 10).map((n) => `\`$${n}\``).join(', ')}`;
   }
+
+  const sampleBlock = formatSampleValuesBlock(columns, types, sample);
 
   return (
     `--- ${att.name} ---\n` +
@@ -182,6 +230,7 @@ export function formatCollectionSchemaBlock(
     `  - **Rows:** ${rowCount.toLocaleString()}\n` +
     `  - **Columns (exact names):**\n${colLines || '    (load schemas)'}\n` +
     hints +
+    sampleBlock +
     `\n  - **Example:** \`{"collection":"${coll}","pipeline":[{"$match":{}},{"$group":{"_id":null,"count":{"$sum":1}}}]}\`\n` +
     `---`
   );
@@ -245,8 +294,13 @@ export function buildMongoRepairPrompt(opts: {
   tableSchemas: Record<string, CollectionSchema>;
   sqlTables: string[];
   contract: 'mongodb' | 'sql';
+  /** Verbatim user message for THIS turn — included at the top of every retry
+   *  so the LLM re-extracts filter values from the original question instead
+   *  of carrying over an entity from a prior turn (the "Pune vs Berhampur"
+   *  context-bias bug). Pass the raw `cleanText` from handleSend. */
+  userQuestion?: string;
 }): string {
-  const { error, collection, failedPipeline, tableSchemas, sqlTables, contract } = opts;
+  const { error, collection, failedPipeline, tableSchemas, sqlTables, contract, userQuestion } = opts;
   let schemaBlock = '';
   if (collection && tableSchemas[collection]) {
     const s = tableSchemas[collection];
@@ -279,14 +333,23 @@ export function buildMongoRepairPrompt(opts: {
     ? `\nFailed pipeline: \`${JSON.stringify(failedPipeline).slice(0, 800)}\`\n`
     : '';
 
+  const userQuestionBlock = userQuestion?.trim()
+    ? `\n**The user's ORIGINAL message THIS turn was:** "${userQuestion.trim()}"\n` +
+      `Extract centre / cluster / period / date / category literals from THIS message only.\n` +
+      `Do NOT carry over entities (centres, periods, etc.) from any earlier turn of the chat — that is a common bug. ` +
+      `If the user's message names "Berhampur" you MUST filter Berhampur, not whatever centre was discussed previously.\n`
+    : '';
+
   return (
     `The data query failed.\n` +
     `**Error:** ${error}\n` +
     pipelineSnippet +
+    userQuestionBlock +
     `\n**Allowed collections:** ${sqlTables.join(', ') || 'none'}\n\n` +
     `**Schema for correction:**\n${schemaBlock}\n\n` +
     `Generate ONE corrected \`\`\`${contract} block using EXACT column names from the schema. ` +
-    `Do NOT use $split. For revenue by state use StateName if listed.`
+    `Do NOT use $split. For centre/cluster filters: master-probe data_24_center_master first, then $in. ` +
+    `For period/date filters: match the EXACT stored format shown in the Sample stored values block.`
   );
 }
 

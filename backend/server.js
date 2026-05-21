@@ -85,7 +85,11 @@ function getAnthropicClient() {
   return new Anthropic({ apiKey: key });
 }
 
-/** Validate Claude Messages API shape: non-empty, strict user/assistant alternation, starts with user */
+/** Validate Claude Messages API shape: non-empty, alternating user/assistant,
+ *  starts with user. Consecutive same-role messages are MERGED with a blank
+ *  line so the chat never 400s just because a prior turn had an empty/stripped
+ *  assistant bubble (e.g. a Phase-1 response that was nothing but a stripped
+ *  ```mongodb``` block). */
 function normalizeAnthropicMessages(raw) {
   if (!Array.isArray(raw)) return null;
   const out = [];
@@ -93,13 +97,17 @@ function normalizeAnthropicMessages(raw) {
     if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
     const content = typeof m.content === 'string' ? m.content : '';
     if (!content.trim()) continue;
+    if (out.length > 0 && out[out.length - 1].role === m.role) {
+      out[out.length - 1] = {
+        role: m.role,
+        content: out[out.length - 1].content + '\n\n' + content,
+      };
+      continue;
+    }
     out.push({ role: m.role, content });
   }
   if (out.length === 0) return null;
   if (out[0].role !== 'user') return null;
-  for (let k = 1; k < out.length; k++) {
-    if (out[k].role === out[k - 1].role) return null;
-  }
   return out;
 }
 

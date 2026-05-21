@@ -2841,8 +2841,20 @@ type ChatUiMsg = { role: 'user' | 'model' | 'error'; text: string; type?: 'text'
 function isPlaceholderAssistantText(t: string): boolean {
   const s = (t || '').trim();
   if (!s) return true;
+  // Any of the transient "we're working on it" bubbles the chat renders while
+  // a query / retry / fallback is in flight. None of these should ever be sent
+  // back to the LLM as real assistant content, and none should be persisted as
+  // a real turn (they break user/assistant alternation server-side).
   if (s === '_🔍 Fetching data from SQL Table..._') return true;
   if (s.startsWith('_🔍 Fetching')) return true;
+  if (s.startsWith('_🔍 Consulting')) return true;
+  if (s.startsWith('_🔍 Querying')) return true;
+  if (s.startsWith('_⚠️ Retrying')) return true;
+  if (s.startsWith('_⚠️ 0 rows returned')) return true;
+  if (s.startsWith('_⚠️ Query failed')) return true;
+  if (s.startsWith('_📦 Generating downloadable file')) return true;
+  // Bare placeholder-only messages (any "_..._" with nothing else)
+  if (/^_[^_]*_\s*$/.test(s)) return true;
   return false;
 }
 
@@ -2863,11 +2875,36 @@ function buildAnthropicMessagesForChat(
   for (let j = i; j <= endIdx; j++) {
     const m = arr[j];
     if (m.role === 'error') continue;
-    if (m.role === 'user') out.push({ role: 'user', content: m.text });
-    else if (m.role === 'model') out.push({ role: 'assistant', content: m.text });
+    if (m.role === 'user') {
+      const txt = (m.text || '').trim();
+      if (!txt) continue;
+      out.push({ role: 'user', content: m.text });
+    } else if (m.role === 'model') {
+      // Skip empty bubbles and any "_🔍 …_" / "_⚠️ …_" placeholder we set while
+      // a Mongo query / retry / artifact was in flight — those are NOT real
+      // model turns and forwarding them to the server breaks role alternation
+      // once normalizeAnthropicMessages filters their empty content out.
+      const txt = (m.text || '').trim();
+      if (!txt) continue;
+      if (isPlaceholderAssistantText(m.text)) continue;
+      out.push({ role: 'assistant', content: m.text });
+    }
   }
   if (!firstCall && slot?.role === 'model' && !isPlaceholderAssistantText(slot.text)) {
-    out.push({ role: 'assistant', content: slot.text });
+    const slotTxt = (slot.text || '').trim();
+    if (slotTxt) out.push({ role: 'assistant', content: slot.text });
+  }
+  // Collapse any accidental same-role neighbours so the request always
+  // alternates user/assistant. (Frontend belt-and-braces; server also merges.)
+  for (let k = 1; k < out.length; k++) {
+    if (out[k].role === out[k - 1].role) {
+      out[k - 1] = {
+        role: out[k - 1].role,
+        content: out[k - 1].content + '\n\n' + out[k].content,
+      };
+      out.splice(k, 1);
+      k--;
+    }
   }
   out.push({ role: 'user', content: prompt });
   return out;
@@ -3423,6 +3460,7 @@ const App = () => {
         columnTypes: Record<string, string>;
         rowCount: number;
         parseQuality?: Array<{ column: string; inferred: 'numeric' | 'text' | 'mixed'; coercedPct: number }>;
+        sample?: Array<Record<string, unknown>>;
       }> = await res.json();
       
       console.log(`✓ Fetched ${schemas.length} data schemas from server`);
@@ -3440,7 +3478,9 @@ const App = () => {
             columns: schema.columns,
             rowCount: schema.rowCount,
             fileName: schema.fileName,
-            parseQuality: schema.parseQuality
+            columnTypes: schema.columnTypes,
+            parseQuality: schema.parseQuality,
+            sample: schema.sample,
           }
         }));
         
@@ -3756,6 +3796,10 @@ in this chat surface. These rules override Layer 3 wherever they conflict.
 7. Confidentiality / insider exposure — proactively flag any output containing market-sensitive numbers, MNPI, or material non-public information that could create insider exposure if circulated beyond its intended audience. Withhold or mark such content unless the user has confirmed the document is internal only.
 8. Chat-surface format honesty — this chat surface cannot author or attach .docx / .pptx / .xlsx files. The doctrine's "Deliverable Formats" must degrade gracefully: produce board-grade structured chat output plus this app's native charts (JSON chart blocks), Mermaid diagrams, and Markdown tables. When a true file deliverable (board deck, financial model, formal memo) is warranted, hand back the full structure / skeleton ready to be exported and state explicitly that it must be exported. Never pretend to attach a file.
 9. Doctrine wins on conflict — if any instruction in Layer 3 (the execution substrate below) appears to soften, contradict, or bypass Layers 1 or 2, follow Layers 1 and 2.
+9a. **No empty-result speculation (BINDING).** If a MongoDB pipeline returns 0 rows, you MUST state plainly: \`"0 rows returned for filters: <list the exact $match filters used>"\` and either (i) probe the distinct values of the offending column with a \`{ "$project": {"<col>":1, "_id":0}, "$limit": 5 }\` follow-up, or (ii) ask the user to confirm the centre/period spelling. You MUST NOT invent causes such as "not synced from HIS", "upload pending", "Q4 sync issue", "data residency issue", or any owner/action item ("Finance IT to validate the export job") that you cannot trace to an actually-executed query result. A 0-row result is almost always a filter mismatch (e.g. exact "Pune" vs stored "Pune Aundh", "Jan-26" vs "2026-01-01"), never an excuse for narrative.
+9b. **Centre/Cluster alias rule (MANDATORY, ENFORCED).** Before filtering \`Center Name\` / \`Cluster\` / \`Clinic\` on any transactional file (21_Revenue, 22_Pharmacy, 23_CollectionDayonDay, 17_Footfall, 19_ICSI), you MUST FIRST run a master probe against \`data_24_center_master\` using the EXACT term(s) from the user's current message: \`{"collection":"data_24_center_master","pipeline":[{"$match":{"$or":[{"Center Name":{"$regex":"<user term>","$options":"i"}},{"Cluster Name":{"$regex":"<user term>","$options":"i"}},{"Entity1":{"$regex":"<user term>","$options":"i"}},{"Entity2":{"$regex":"<user term>","$options":"i"}}]}},{"$project":{"_id":0,"Center Name":1,"ERP Code":1,"Cluster Name":1}}]}\`. Then use the returned exact \`Center Name\` strings with \`$in\` on the transactional query. Using \`$regex\` directly on a transactional file (without master probe) is only acceptable when the master probe has already run in a prior turn of THIS chat. Never use exact equality on a centre/cluster string the user typed.
+9c. **Date/period literal rule (BINDING).** Before filtering \`Month\`, \`CommonDate\`, \`BillingRequestDate\`, \`FirstVisitDate\`, \`IcsiDate\`, or any period column, you MUST match the EXACT stored format shown in the Sample stored values block of the relevant collection (e.g. \`2026-01-01\`, not \`Jan-26\` / \`202601\` / \`January 2026\`). If the format is not in the schema block, run a 3-row probe first; do not guess.
+9d. **Entity grounding (BINDING — applies to every turn).** Every literal value in any \`$match\` — centre, cluster, clinic, state, city, period, date, category, MainGroup, IsDonor, etc. — MUST be extracted from the CURRENT user message in THIS turn. Prior turns of the chat may inform analysis style and continuity, but MUST NOT supply filter values. Examples of forbidden behaviour: if the user just asked about "Berhampur", you may not put \`Center Name: "Pune"\` in \`$match\` because Pune was discussed earlier; if the user named "2025", you may not filter "2026" because the previous turn was about 2026. If the current message does not name a centre/cluster/period/metric needed to answer, ASK the user to specify rather than defaulting to one from a prior turn. Treat each user message as a fresh extraction task — read it literally, identify the entities it contains, and use ONLY those.
 10. Downloadable deliverables — when (and only when) a user explicitly asks for a deck, workbook, memo, or report, emit exactly one \`\`\`artifact\`\`\` fenced JSON block (schema documented in Layer 3) AFTER the relevant \`\`\`mongodb\`\`\` query has actually been executed and every figure inside the artifact traces to that returned result. NEVER emit an \`\`\`artifact\`\`\` block from estimated, illustrative, benchmark, or remembered numbers. If the inputs required to populate the artifact are missing from the loaded collections, do NOT emit the block — instead, state plainly which inputs are missing and what query you would run once they are provided. NEVER claim a file is "attached" or "ready" without emitting the block; the download button only appears when the block is present, so silence equals no file. Honour the format matrix: PPTX carries the charts; XLSX carries multi-sheet workings with live formulas; DOCX and PDF carry the narrative + tables (no charts). If a user asks for charts inside the Word/PDF deliverable, state plainly that charts ship in the PPTX and that the Word/PDF carry the tables.
 `;
 
@@ -4548,12 +4592,52 @@ ${layer3ExecutionSubstrate}`;
                       result = await executeMongoQuery(pipeline, fileName || undefined, collectionName);
                     }
                     
+                    // ----------------------------------------------------------
+                    // FIX A2 — 0-row retry. A pipeline that returns `[]` is NOT
+                    // "missing data"; it almost always means a filter mismatch
+                    // (exact "Pune" vs stored "Pune Aundh", "Jan-26" vs
+                    // "2026-01-01", etc.). Force one targeted repair attempt
+                    // before letting the model narrate a 0-result.
+                    // ----------------------------------------------------------
+                    if (mongoMatch && Array.isArray(result) && result.length === 0 && attemptCount < 2) {
+                        setMessages(prev => {
+                             const updated = [...prev];
+                             updated[messageIndex].text = friendlyMessage + "\n_⚠️ 0 rows returned — retrying with relaxed filters..._";
+                             return updated;
+                        });
+                        const zeroRowRepairPrompt = buildMongoRepairPrompt({
+                          error:
+                            `Query executed successfully but returned 0 rows. This almost always means a FILTER VALUE MISMATCH, not missing data.\n\n` +
+                            `MANDATORY corrections before you retry:\n` +
+                            `1. Re-read the user's ORIGINAL message (shown above) and re-extract the centre/cluster/period from it. If the failed pipeline used a different centre name than the one the user typed (common context-bias bug), fix it.\n` +
+                            `2. For any text dimension (Center Name, Cluster, Clinic, Region, State, etc.) replace exact-match with $regex + $options:"i". Stored values are often sub-centres like "Pune Aundh", "Pune Bibwewadi" — exact "Pune" returns 0.\n` +
+                            `3. For Month / Date / Period columns: re-check the EXACT stored format using a probe pipeline ` +
+                            `[{"$project":{"_id":0,"<col>":1}},{"$limit":3}] then match that format literally. Do NOT use "Jan-26", "JAN 2026", or "202601" unless you have proven they are stored that way.\n` +
+                            `4. Drop any OPTIONAL filter you added (e.g. MainGroup, Category, IsDonor) and retry. Add them back only if the relaxed query returns rows.\n` +
+                            `5. Centre/cluster queries: master-probe data_24_center_master ($regex on Center Name / Cluster Name) to get the EXACT stored variants, then use $in on the transactional file.\n\n` +
+                            `Emit exactly ONE corrected \`\`\`mongodb block. Do NOT narrate "data not synced", "HIS export pending", "Q4 sync issue", or any cause you cannot trace to a query result.`,
+                          collection: failedCollection,
+                          failedPipeline,
+                          tableSchemas,
+                          sqlTables,
+                          contract: 'mongodb',
+                          userQuestion: cleanText,
+                        });
+                        await processResponseWithMongo(zeroRowRepairPrompt, attemptCount + 1, logId);
+                        return;
+                    }
+
                     const resultStr = JSON.stringify(result, getCircularReplacer(), 2);
                     const truncatedResult = resultStr.length > 50000 ? resultStr.substring(0, 50000) + "...[Truncated]" : resultStr;
                     const engineLabel = sqlMatch ? 'SQL' : 'MongoDB';
                     let nextPrompt =
                       `${engineLabel} Query Result:\n${truncatedResult}\n\n` +
                       `Every figure, rank, and row label MUST come from this result set exactly as returned; do not reorder, recompute, round, or infer.\n\n` +
+                      (Array.isArray(result) && result.length === 0
+                        ? `The query genuinely returned 0 rows after retries. State this plainly as "0 rows returned for filters: <list the filters>". ` +
+                          `Do NOT speculate about ETL, HIS sync, upload jobs, finance owners, or "Q4 sync issues". ` +
+                          `Suggest only: (a) trying a different period/centre spelling, (b) probing distinct values of the filter column.\n\n`
+                        : ``) +
                       `Please interpret this data and answer the original user question.`;
 
                     if (sqlMatch && Array.isArray(result) && result.length > 1 && queryJSON.file) {
@@ -4615,6 +4699,7 @@ ${layer3ExecutionSubstrate}`;
                           tableSchemas,
                           sqlTables,
                           contract,
+                          userQuestion: cleanText,
                         });
                         await processResponseWithMongo(repairPrompt, attemptCount + 1, logId);
                     } else {
